@@ -134,6 +134,9 @@ def get_args():
         {"name": "--num_envs", "type": int, "help": "Number of environments to create. Overrides config file if provided."},
         {"name": "--seed", "type": int, "help": "Random seed. Overrides config file if provided."},
         {"name": "--max_iterations", "type": int, "help": "Maximum number of training iterations. Overrides config file if provided."},
+        {"name": "--rpi_lambda", "type": float, "default": 0.1, "help": "RPI Bellman inequality penalty weight"},
+        {"name": "--rpi_lambda_mono", "type": float, "default": 0.1, "help": "RPI monotonicity penalty weight"},
+        {"name": "--rpi_target_violation_rate", "type": float, "default": 0.1, "help": "Target fraction of Bellman violations"},
     ]
     # parse arguments
     args = gymutil.parse_arguments(

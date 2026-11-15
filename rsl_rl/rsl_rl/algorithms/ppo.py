@@ -52,6 +52,11 @@ class PPO:
                  schedule="fixed",
                  desired_kl=0.01,
                  device='cpu',
+                 rpi_lambda=0.1,
+                 rpi_lambda_max=10.0,
+                 rpi_target_violation_rate=0.1,
+                 rpi_lambda_mono=0.1,
+                 rpi_lambda_mono_max=10.0,
                  ):
 
         self.device = device
@@ -77,6 +82,11 @@ class PPO:
         self.lam = lam
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
+        self.rpi_lambda = rpi_lambda
+        self.rpi_lambda_max = rpi_lambda_max
+        self.rpi_target_violation_rate = rpi_target_violation_rate
+        self.rpi_lambda_mono = rpi_lambda_mono
+        self.rpi_lambda_mono_max = rpi_lambda_mono_max
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device)
@@ -120,12 +130,15 @@ class PPO:
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
+        mean_rpi_violation = 0
+        batch_count = 0
+
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
-            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
+            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch , td_targets_batch  in generator:
 
 
                 self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
@@ -159,14 +172,36 @@ class PPO:
                 surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
                 # Value function loss
-                if self.use_clipped_value_loss:
-                    value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(-self.clip_param,
-                                                                                                    self.clip_param)
-                    value_losses = (value_batch - returns_batch).pow(2)
-                    value_losses_clipped = (value_clipped - returns_batch).pow(2)
-                    value_loss = torch.max(value_losses, value_losses_clipped).mean()
-                else:
-                    value_loss = (returns_batch - value_batch).pow(2).mean()
+                # if self.use_clipped_value_loss:
+                #     value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(-self.clip_param,
+                #                                                                                     self.clip_param)
+                #     value_losses = (value_batch - returns_batch).pow(2)
+                #     value_losses_clipped = (value_clipped - returns_batch).pow(2)
+                #     value_loss = torch.max(value_losses, value_losses_clipped).mean()
+                # else:
+                value_loss = (returns_batch - value_batch).pow(2).mean()
+
+                # RPI penalty — only on first epoch (targets are fresh)
+                current_epoch = batch_count // self.num_mini_batches
+
+                # --- RPI Constraint 1: Bellman inequality V(s) <= r + gamma*V(s') ---
+                # Use 1-step TD target (not GAE) for correct Bellman operator
+                rpi_violation = (value_batch - td_targets_batch).clamp(min=0)   # [V - y_td]+
+                violation_rate = (value_batch > td_targets_batch).float().mean()
+
+                # --- RPI Constraint 2: Monotonicity f_{k+1} >= f_k ---
+                # value_batch = current critic, target_values_batch = old critic (f_k)
+                mono_violation = (target_values_batch - value_batch).clamp(min=0)  # [V_old - V]+
+                mono_violation_rate = (value_batch < target_values_batch).float().mean()
+
+                if current_epoch == 0:
+                    value_loss = (value_loss
+                                + self.rpi_lambda * rpi_violation.mean()
+                                + self.rpi_lambda_mono * mono_violation.mean())
+
+                mean_rpi_violation += rpi_violation.mean().item()
+                batch_count += 1
+                # Ending  of RPI Penalty
 
                 loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
 
@@ -179,9 +214,24 @@ class PPO:
                 mean_value_loss += value_loss.item()
                 mean_surrogate_loss += surrogate_loss.item()
 
+                # Adapt RPI lambda (Lagrangian update)
+                # Adapt both lambdas (Lagrangian updates)
+                if current_epoch == 0:
+                    # Bellman lambda
+                    if violation_rate > self.rpi_target_violation_rate:
+                        self.rpi_lambda = min(self.rpi_lambda * 1.5, self.rpi_lambda_max)
+                    else:
+                        self.rpi_lambda = max(self.rpi_lambda / 1.5, 1e-4)
+                    # Monotonicity lambda
+                    if mono_violation_rate > self.rpi_target_violation_rate:
+                        self.rpi_lambda_mono = min(self.rpi_lambda_mono * 1.5, self.rpi_lambda_mono_max)
+                    else:
+                        self.rpi_lambda_mono = max(self.rpi_lambda_mono / 1.5, 1e-4)
+
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
+        mean_rpi_violation /= num_updates
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss
+        return mean_value_loss, mean_surrogate_loss, mean_rpi_violation
