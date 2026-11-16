@@ -129,7 +129,9 @@ class OnPolicyRunner:
                 start = stop
                 self.alg.compute_returns(critic_obs)
             
-            mean_value_loss, mean_surrogate_loss = self.alg.update()
+            mean_value_loss, mean_surrogate_loss, \
+            mean_mono_violation, mean_bellman_violation, \
+            mean_q_low, mean_q_spread, mean_mono_penalty = self.alg.update()
             stop = time.time()
             learn_time = stop - start
             if self.log_dir is not None:
@@ -166,6 +168,13 @@ class OnPolicyRunner:
         self.writer.add_scalar('Loss/value_function', locs['mean_value_loss'], locs['it'])
         self.writer.add_scalar('Loss/surrogate', locs['mean_surrogate_loss'], locs['it'])
         self.writer.add_scalar('Loss/learning_rate', self.alg.learning_rate, locs['it'])
+
+        self.writer.add_scalar('RPI/monotonicity_violation_rate', locs['mean_mono_violation'],    locs['it'])
+        self.writer.add_scalar('RPI/bellman_violation_rate',      locs['mean_bellman_violation'], locs['it'])
+        self.writer.add_scalar('RPI/q_low_mean',                  locs['mean_q_low'],             locs['it'])
+        self.writer.add_scalar('RPI/quantile_spread',             locs['mean_q_spread'],          locs['it'])
+        self.writer.add_scalar('RPI/mono_penalty',                locs['mean_mono_penalty'],      locs['it'])
+
         self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
         self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
         self.writer.add_scalar('Perf/collection time', locs['collection_time'], locs['it'])
@@ -187,7 +196,12 @@ class OnPolicyRunner:
                           f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                           f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
-                          f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n""")
+                          f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
+                          f"""{'Mono violation rate:':>{pad}} {locs['mean_mono_violation']:.3f}\n"""
+                          f"""{'Bellman violation rate:':>{pad}} {locs['mean_bellman_violation']:.3f}\n"""
+                          f"""{'Q low mean:':>{pad}} {locs['mean_q_low']:.4f}\n"""
+                          f"""{'Quantile spread:':>{pad}} {locs['mean_q_spread']:.4f}\n"""
+                          )
                           #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
                           #   f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
         else:
@@ -197,7 +211,12 @@ class OnPolicyRunner:
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                           f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                           f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
-                          f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n""")
+                          f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
+                          f"""{'Mono violation rate:':>{pad}} {locs['mean_mono_violation']:.3f}\n"""
+                          f"""{'Bellman violation rate:':>{pad}} {locs['mean_bellman_violation']:.3f}\n"""
+                          f"""{'Q low mean:':>{pad}} {locs['mean_q_low']:.4f}\n"""
+                          f"""{'Quantile spread:':>{pad}} {locs['mean_q_spread']:.4f}\n"""
+                           )
                           
         log_string += ep_string
         log_string += (f"""{'-' * width}\n"""

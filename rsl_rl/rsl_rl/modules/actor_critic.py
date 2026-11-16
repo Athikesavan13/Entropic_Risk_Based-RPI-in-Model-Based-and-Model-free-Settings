@@ -136,9 +136,11 @@ class ActorCritic(nn.Module):
     def evaluate(self, critic_observations, **kwargs):
         value = self.critic(critic_observations)
         return value
+
     def get_value(self, critic_observations, **kwargs):
-        quantiles = self.evaluate(critic_observations, **kwargs)  # [batch, N]
-        return quantiles.mean(dim=-1, keepdim=True)               # [batch, 1]
+        quantiles = self.evaluate(critic_observations, **kwargs)
+        return quantiles.mean(dim=-1, keepdim=True)  # mean for stable GAE
+
 
 def get_activation(act_name):
     if act_name == "elu":

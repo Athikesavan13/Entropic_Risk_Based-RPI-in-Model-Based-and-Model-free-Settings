@@ -135,12 +135,17 @@ class PPO:
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
+        mean_mono_violation = 0
+        mean_bellman_violation = 0
+        mean_q_low = 0
+        mean_q_spread = 0
+        mean_mono_penalty = 0
 
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-        for obs_batch, critic_obs_batch, actions_batch, _, advantages_batch, returns_batch, old_actions_log_prob_batch, \
+        for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
             old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch , _  in generator:
 
 
@@ -174,15 +179,34 @@ class PPO:
                                                                                 1.0 + self.clip_param)
                 surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
-                # Quantile regression loss
-                # value_batch: [batch, N],  returns_batch: [batch, 1]
-                u = returns_batch - value_batch          # [batch, N]
+
+                 # --- Quantile regression loss (all N quantiles) ---
+                u = returns_batch - value_batch               # [batch, N]
                 kappa = self.quantile_huber_kappa
                 huber = torch.where(u.abs() <= kappa,
                                     0.5 * u.pow(2) / kappa,
                                     u.abs() - 0.5 * kappa)
                 value_loss = ((self.taus - (u < 0).float()).abs() * huber).mean()
 
+                # --- RPI: extract τ=0.1 lower quantile ---
+                tau_idx = max(0, int(self.num_quantiles * 0.1) - 1)
+                q_low_new = value_batch[:, tau_idx:tau_idx+1]         # [batch, 1]
+                q_mean    = value_batch.mean(dim=-1, keepdim=True)     # [batch, 1]
+
+                # --- RPI Property 2: Monotonicity f_{k+1} >= f_k ---
+                mono_penalty = (target_values_batch - q_low_new).clamp(min=0).mean()
+                value_loss = value_loss + 0.1 * mono_penalty
+
+                # --- RPI metrics ---
+                bellman_violation = (q_mean > returns_batch).float().mean()
+                mono_violation    = (target_values_batch > q_low_new).float().mean()
+                q_spread = (value_batch.mean(dim=-1, keepdim=True) - q_low_new).mean()
+
+                mean_mono_violation    += mono_violation.item()
+                mean_bellman_violation += bellman_violation.item()
+                mean_q_low             += q_low_new.mean().item()
+                mean_q_spread          += q_spread.item()
+                mean_mono_penalty      += mono_penalty.item()
 
                 loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
 
@@ -196,8 +220,15 @@ class PPO:
                 mean_surrogate_loss += surrogate_loss.item()
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
-        mean_value_loss /= num_updates
-        mean_surrogate_loss /= num_updates
+        mean_value_loss        /= num_updates
+        mean_surrogate_loss    /= num_updates
+        mean_mono_violation    /= num_updates
+        mean_bellman_violation /= num_updates
+        mean_q_low             /= num_updates
+        mean_q_spread          /= num_updates
+        mean_mono_penalty      /= num_updates
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss
+        return mean_value_loss, mean_surrogate_loss, \
+            mean_mono_violation, mean_bellman_violation, \
+            mean_q_low, mean_q_spread, mean_mono_penalty
