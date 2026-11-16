@@ -44,6 +44,7 @@ class ActorCritic(nn.Module):
                         critic_hidden_dims=[256, 256, 256],
                         activation='elu',
                         init_noise_std=1.0,
+                        num_quantiles=32,
                         **kwargs):
         if kwargs:
             print("ActorCritic.__init__ got unexpected arguments, which will be ignored: " + str([key for key in kwargs.keys()]))
@@ -72,7 +73,7 @@ class ActorCritic(nn.Module):
         critic_layers.append(activation)
         for l in range(len(critic_hidden_dims)):
             if l == len(critic_hidden_dims) - 1:
-                critic_layers.append(nn.Linear(critic_hidden_dims[l], 1))
+                critic_layers.append(nn.Linear(critic_hidden_dims[l], num_quantiles))
             else:
                 critic_layers.append(nn.Linear(critic_hidden_dims[l], critic_hidden_dims[l + 1]))
                 critic_layers.append(activation)
@@ -86,6 +87,7 @@ class ActorCritic(nn.Module):
         self.distribution = None
         # disable args validation for speedup
         Normal.set_default_validate_args = False
+        self.num_quantiles = num_quantiles
         
         # seems that we get better performance without init
         # self.init_memory_weights(self.memory_a, 0.001, 0.)
@@ -134,6 +136,9 @@ class ActorCritic(nn.Module):
     def evaluate(self, critic_observations, **kwargs):
         value = self.critic(critic_observations)
         return value
+    def get_value(self, critic_observations, **kwargs):
+        quantiles = self.evaluate(critic_observations, **kwargs)  # [batch, N]
+        return quantiles.mean(dim=-1, keepdim=True)               # [batch, 1]
 
 def get_activation(act_name):
     if act_name == "elu":

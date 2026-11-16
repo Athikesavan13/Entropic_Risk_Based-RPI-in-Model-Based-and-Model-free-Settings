@@ -137,6 +137,7 @@ def get_args():
         {"name": "--rpi_lambda", "type": float, "default": 0.1, "help": "RPI Bellman inequality penalty weight"},
         {"name": "--rpi_lambda_mono", "type": float, "default": 0.1, "help": "RPI monotonicity penalty weight"},
         {"name": "--rpi_target_violation_rate", "type": float, "default": 0.1, "help": "Target fraction of Bellman violations"},
+        {"name": "--num_quantiles", "type": int, "default": 32, "help": "Number of quantiles for quantile critic"},
     ]
     # parse arguments
     args = gymutil.parse_arguments(
