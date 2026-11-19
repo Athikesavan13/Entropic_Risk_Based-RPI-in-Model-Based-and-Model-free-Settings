@@ -59,6 +59,7 @@ class PPO:
                  rpi_lambda_mono_max=10.0,
                  num_quantiles=32,
                  quantile_huber_kappa=1.0,
+                 erpi_alpha=1.0,
                  ):
 
         self.device = device
@@ -70,7 +71,7 @@ class PPO:
         # PPO components
         self.actor_critic = actor_critic
         self.actor_critic.to(self.device)
-        self.storage = None # initialized later
+        self.storage = None 
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
         self.transition = RolloutStorage.Transition()
 
@@ -91,6 +92,8 @@ class PPO:
         self.rpi_lambda_mono_max = rpi_lambda_mono_max
         self.num_quantiles = num_quantiles
         self.quantile_huber_kappa = quantile_huber_kappa
+        self.erpi_alpha = erpi_alpha
+        self.actor_critic.erpi_alpha = erpi_alpha  # sync to network
         self.taus = torch.linspace(1/(2*num_quantiles), 1 - 1/(2*num_quantiles), num_quantiles, device=device)
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
@@ -140,6 +143,7 @@ class PPO:
         mean_q_low = 0
         mean_q_spread = 0
         mean_mono_penalty = 0
+        mean_erpi_value = 0
 
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -189,12 +193,15 @@ class PPO:
                 value_loss = ((self.taus - (u < 0).float()).abs() * huber).mean()
 
                 # --- RPI: extract τ=0.1 lower quantile ---
-                tau_idx = max(0, int(self.num_quantiles * 0.1) - 1)
-                q_low_new = value_batch[:, tau_idx:tau_idx+1]         # [batch, 1]
                 q_mean    = value_batch.mean(dim=-1, keepdim=True)     # [batch, 1]
 
                 # --- RPI Property 2: Monotonicity f_{k+1} >= f_k ---
+                # Monotonicity: compare entropic value old vs new (same scale)
+                # to (stable τ=0.1 comparison):
+                tau_idx = max(0, int(self.num_quantiles * 0.1) - 1)
+                q_low_new = value_batch[:, tau_idx:tau_idx+1]
                 mono_penalty = (target_values_batch - q_low_new).clamp(min=0).mean()
+                
                 value_loss = value_loss + 0.1 * mono_penalty
 
                 # --- RPI metrics ---
@@ -207,6 +214,17 @@ class PPO:
                 mean_q_low             += q_low_new.mean().item()
                 mean_q_spread          += q_spread.item()
                 mean_mono_penalty      += mono_penalty.item()
+
+
+                # ERPI value — logging only, not used in loss
+                log_n = torch.log(torch.tensor(self.num_quantiles,
+                                dtype=torch.float32, device=self.device))
+                q_erpi = -(1.0 / self.erpi_alpha) * (
+                    torch.logsumexp(-self.erpi_alpha * value_batch,
+                                    dim=-1, keepdim=True) - log_n
+                )
+                mean_erpi_value += q_erpi.mean().item()
+
 
                 loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
 
@@ -226,9 +244,14 @@ class PPO:
         mean_bellman_violation /= num_updates
         mean_q_low             /= num_updates
         mean_q_spread          /= num_updates
-        mean_mono_penalty      /= num_updates
+
+
+        mean_erpi_value /= num_updates
+        mean_mono_penalty /= num_updates
+
         self.storage.clear()
 
+        # in return:
         return mean_value_loss, mean_surrogate_loss, \
             mean_mono_violation, mean_bellman_violation, \
-            mean_q_low, mean_q_spread, mean_mono_penalty
+            mean_q_low, mean_q_spread, mean_mono_penalty, mean_erpi_value

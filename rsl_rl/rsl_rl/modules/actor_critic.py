@@ -45,6 +45,7 @@ class ActorCritic(nn.Module):
                         activation='elu',
                         init_noise_std=1.0,
                         num_quantiles=32,
+                        erpi_alpha=0.0,
                         **kwargs):
         if kwargs:
             print("ActorCritic.__init__ got unexpected arguments, which will be ignored: " + str([key for key in kwargs.keys()]))
@@ -88,6 +89,7 @@ class ActorCritic(nn.Module):
         # disable args validation for speedup
         Normal.set_default_validate_args = False
         self.num_quantiles = num_quantiles
+        self.erpi_alpha = erpi_alpha
         
         # seems that we get better performance without init
         # self.init_memory_weights(self.memory_a, 0.001, 0.)
@@ -138,9 +140,19 @@ class ActorCritic(nn.Module):
         return value
 
     def get_value(self, critic_observations, **kwargs):
-        quantiles = self.evaluate(critic_observations, **kwargs)
-        return quantiles.mean(dim=-1, keepdim=True)  # mean for stable GAE
+        # mean quantile — used only internally, not for policy decisions
+        quantiles = self.evaluate(critic_observations, **kwargs)   # [batch, N]
+        return quantiles.mean(dim=-1, keepdim=True)                # [batch, 1]
 
+    def get_erpi_value(self, critic_observations, **kwargs):
+        quantiles = self.evaluate(critic_observations, **kwargs)   # [batch, N]
+        alpha = self.erpi_alpha
+        N = quantiles.shape[-1]
+        log_n = torch.log(torch.tensor(N, dtype=torch.float32, device=quantiles.device))
+        erpi_val = -(1.0 / alpha) * (
+            torch.logsumexp(-alpha * quantiles, dim=-1, keepdim=True) - log_n
+        )
+        return erpi_val   # [batch, 1]
 
 def get_activation(act_name):
     if act_name == "elu":
