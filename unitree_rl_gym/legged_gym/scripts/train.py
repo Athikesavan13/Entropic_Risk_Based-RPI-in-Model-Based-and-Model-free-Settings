@@ -14,7 +14,10 @@ def train(args):
     ppo_runner.learn(num_learning_iterations=train_cfg.runner.max_iterations, init_at_random_ep_len=True)
     ppo_runner.alg.num_quantiles = args.num_quantiles
     ppo_runner.alg.taus = torch.linspace(1/(2*args.num_quantiles), 1 - 1/(2*args.num_quantiles), args.num_quantiles, device=ppo_runner.alg.device)
+    ppo_runner.alg.erpi_alpha = args.erpi_alpha
+    ppo_runner.alg.actor_critic.erpi_alpha = args.erpi_alpha
 
+    
 if __name__ == '__main__':
     args = get_args()
     train(args)
